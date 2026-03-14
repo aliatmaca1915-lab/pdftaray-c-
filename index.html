@@ -3,7 +3,14 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>PWA Scanner</title>
+    <title>PDF Tarayıcı</title>
+    
+    <link rel="manifest" href="manifest.json">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <meta name="apple-mobile-web-app-title" content="Tarayıcı">
+    <link rel="apple-touch-icon" href="https://cdn-icons-png.flaticon.com/512/3143/3143460.png">
+
     <script async src="https://docs.opencv.org/4.8.0/opencv.js" type="text/javascript"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
     <style>
@@ -24,16 +31,16 @@
 
 <div id="app-container">
     <div id="view-area">
-        <div id="status">OpenCV Yükleniyor... Lütfen bekleyin.</div>
+        <div id="status">Sistem Hazırlanıyor...</div>
         <video id="camera" autoplay playsinline></video>
         <canvas id="canvasOutput"></canvas>
     </div>
     
     <div id="controls">
         <button id="btn-capture">Fotoğraf Çek</button>
-        <button id="btn-scan" class="success" style="display:none;">Tara ve Düzelt</button>
+        <button id="btn-scan" class="success" style="display:none;">Tara</button>
         <button id="btn-pdf" class="danger" style="display:none;">PDF İndir</button>
-        <button id="btn-retake" style="display:none;">Yeniden Çek</button>
+        <button id="btn-retake" style="display:none;">İptal</button>
     </div>
 </div>
 
@@ -51,7 +58,6 @@
     let isCameraReady = false;
     let isOpenCvReady = false;
 
-    // 1. KAMERAYI BAŞLAT (Arka Kamera)
     async function startCamera() {
         try {
             const stream = await navigator.mediaDevices.getUserMedia({
@@ -61,11 +67,10 @@
             isCameraReady = true;
             checkReadyState();
         } catch (err) {
-            statusDiv.innerText = "Kamera erişim hatası: " + err.message;
+            statusDiv.innerText = "Kamera hatası!";
         }
     }
 
-    // OpenCV Yüklendiğinde Tetiklenir
     window.Module = {
         onRuntimeInitialized: function() {
             isOpenCvReady = true;
@@ -80,7 +85,6 @@
         }
     }
 
-    // 2. FOTOĞRAF ÇEK
     btnCapture.addEventListener('click', () => {
         canvas.width = video.videoWidth;
         canvas.height = video.videoHeight;
@@ -96,67 +100,60 @@
         btnRetake.classList.add('active');
     });
 
-    // 3. CAMSCANNER FİLTRESİ (OpenCV.js)
     btnScan.addEventListener('click', () => {
-        statusDiv.innerText = "İşleniyor...";
+        statusDiv.innerText = "Filtre Uygulanıyor...";
         setTimeout(() => {
             try {
                 let src = cv.imread(canvas);
                 let dst = new cv.Mat();
                 
-                // Gri Tonlamaya Çevir (Grayscale)
+                // 1. Önce Siyah Beyaza Çevir
                 cv.cvtColor(src, src, cv.COLOR_RGBA2GRAY, 0);
                 
-                // CamScanner Tarzı Keskin Siyah Beyaz Filtre (Adaptive Threshold)
-                // Bu filtre kağıttaki gölgeleri siler, yazıları belirginleştirir.
-                cv.adaptiveThreshold(src, dst, 255, cv.ADAPTIVE_THRESH_GAUSSIAN_C, cv.THRESH_BINARY, 21, 10);
+                // 2. Gürültü ve Gölgeleri Azaltmak İçin Bulanıklaştır (YENİ EKLENDİ)
+                let ksize = new cv.Size(5, 5);
+                cv.GaussianBlur(src, src, ksize, 0, 0, cv.BORDER_DEFAULT);
+                
+                // 3. Daha Yumuşak Bir Siyah Beyaz Filtresi (DEĞERLER DÜŞÜRÜLDÜ)
+                cv.adaptiveThreshold(src, dst, 255, cv.ADAPTIVE_THRESH_GAUSSIAN_C, cv.THRESH_BINARY, 11, 2);
                 
                 cv.imshow('canvasOutput', dst);
                 
                 src.delete();
                 dst.delete();
                 
-                statusDiv.innerText = "Tarama Başarılı!";
+                statusDiv.innerText = "Tamamlandı!";
                 btnScan.style.display = 'none';
                 btnPdf.style.display = 'block';
                 btnPdf.classList.add('active');
             } catch (err) {
-                statusDiv.innerText = "İşlem Hatası: " + err.message;
+                statusDiv.innerText = "Hata oluştu!";
             }
-        }, 100); // UI'ın güncellenmesi için ufak bir gecikme
+        }, 100);
     });
 
-    // 4. PDF OLARAK İNDİR
     btnPdf.addEventListener('click', () => {
         const { jsPDF } = window.jspdf;
-        // A4 boyutunda PDF oluştur
         const pdf = new jsPDF({ orientation: "portrait", unit: "mm", format: "a4" });
-        
         const imgData = canvas.toDataURL("image/jpeg", 0.8);
         const pdfWidth = pdf.internal.pageSize.getWidth();
         const pdfHeight = (canvas.height * pdfWidth) / canvas.width;
         
         pdf.addImage(imgData, 'JPEG', 0, 0, pdfWidth, pdfHeight);
-        pdf.save("taranan_belge.pdf");
+        pdf.save("tarama.pdf");
     });
 
-    // YENİDEN ÇEK (Sıfırla)
     btnRetake.addEventListener('click', () => {
         video.style.display = 'block';
         canvas.style.display = 'none';
-        
         btnCapture.style.display = 'block';
         btnScan.style.display = 'none';
         btnPdf.style.display = 'none';
         btnRetake.style.display = 'none';
-        statusDiv.innerText = "Kamerayı kağıda tutun.";
+        statusDiv.innerText = "Hazır.";
     });
 
-    // Başlat
     startCamera();
 </script>
-
 </body>
 </html>
-
-
