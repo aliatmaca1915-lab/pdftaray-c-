@@ -38,7 +38,7 @@
     
     <div id="controls">
         <button id="btn-capture">Fotoğraf Çek</button>
-        <button id="btn-scan" class="success" style="display:none;">Tara</button>
+        <button id="btn-scan" class="success" style="display:none;">Kağıdı Bul ve Tara</button>
         <button id="btn-pdf" class="danger" style="display:none;">PDF İndir</button>
         <button id="btn-retake" style="display:none;">İptal</button>
     </div>
@@ -100,34 +100,74 @@
         btnRetake.classList.add('active');
     });
 
+    // İŞTE SİHRİN GERÇEKLEŞTİĞİ YENİ ALGORİTMA
     btnScan.addEventListener('click', () => {
-        statusDiv.innerText = "Filtre Uygulanıyor...";
+        statusDiv.innerText = "Kağıt Aranıyor...";
         setTimeout(() => {
             try {
                 let src = cv.imread(canvas);
-                let dst = new cv.Mat();
+                let gray = new cv.Mat();
+                cv.cvtColor(src, gray, cv.COLOR_RGBA2GRAY, 0);
                 
-                // 1. Önce Siyah Beyaza Çevir
-                cv.cvtColor(src, src, cv.COLOR_RGBA2GRAY, 0);
+                // Pürüzleri gizle
+                cv.GaussianBlur(gray, gray, new cv.Size(5, 5), 0, 0, cv.BORDER_DEFAULT);
                 
-                // 2. Gürültü ve Gölgeleri Azaltmak İçin Bulanıklaştır (YENİ EKLENDİ)
-                let ksize = new cv.Size(5, 5);
-                cv.GaussianBlur(src, src, ksize, 0, 0, cv.BORDER_DEFAULT);
+                // Kenarları (Çizgileri) bul
+                let edges = new cv.Mat();
+                cv.Canny(gray, edges, 75, 200, 3, false);
                 
-                // 3. Daha Yumuşak Bir Siyah Beyaz Filtresi (DEĞERLER DÜŞÜRÜLDÜ)
-                cv.adaptiveThreshold(src, dst, 255, cv.ADAPTIVE_THRESH_GAUSSIAN_C, cv.THRESH_BINARY, 11, 2);
+                // Şekilleri (Konturları) çıkart
+                let contours = new cv.MatVector();
+                let hierarchy = new cv.Mat();
+                cv.findContours(edges, contours, hierarchy, cv.RETR_EXTERNAL, cv.CHAIN_APPROX_SIMPLE);
                 
-                cv.imshow('canvasOutput', dst);
+                // En büyük alanı (kağıdı) bul
+                let maxArea = 0;
+                let maxContour = null;
                 
-                src.delete();
-                dst.delete();
+                for (let i = 0; i < contours.size(); ++i) {
+                    let cnt = contours.get(i);
+                    let area = cv.contourArea(cnt);
+                    if (area > maxArea && area > 50000) { // Çok küçük çöpleri yoksay
+                        maxArea = area;
+                        maxContour = cnt;
+                    }
+                }
                 
-                statusDiv.innerText = "Tamamlandı!";
+                let finalImage = new cv.Mat();
+                
+                if (maxContour !== null) {
+                    // KAĞIT BULUNDU! Sadece kağıdın olduğu alanı kırp (Bacakları ve masayı at)
+                    statusDiv.innerText = "Kağıt Bulundu! Düzeltiliyor...";
+                    let rect = cv.boundingRect(maxContour);
+                    let cropped = src.roi(rect);
+                    
+                    // Kırpılmış kağıda filtreyi uygula
+                    cv.cvtColor(cropped, finalImage, cv.COLOR_RGBA2GRAY, 0);
+                    cv.adaptiveThreshold(finalImage, finalImage, 255, cv.ADAPTIVE_THRESH_GAUSSIAN_C, cv.THRESH_BINARY, 11, 2);
+                    
+                    // Kırpılan resmin boyutunu canvasa uyarla
+                    canvas.width = rect.width;
+                    canvas.height = rect.height;
+                    cropped.delete();
+                } else {
+                    // KAĞIT BULUNAMAZSA (Örn: beyaz masada beyaz kağıt) eski sisteme dön
+                    statusDiv.innerText = "Kağıt sınırları tam bulunamadı. Filtre uygulanıyor.";
+                    cv.cvtColor(src, finalImage, cv.COLOR_RGBA2GRAY, 0);
+                    cv.adaptiveThreshold(finalImage, finalImage, 255, cv.ADAPTIVE_THRESH_GAUSSIAN_C, cv.THRESH_BINARY, 11, 2);
+                }
+                
+                cv.imshow('canvasOutput', finalImage);
+                
+                // Hafızayı temizle (Safari çökmesin diye çok önemli)
+                src.delete(); gray.delete(); edges.delete(); contours.delete(); hierarchy.delete(); finalImage.delete();
+                
+                statusDiv.innerText = "Tarama Başarılı!";
                 btnScan.style.display = 'none';
                 btnPdf.style.display = 'block';
                 btnPdf.classList.add('active');
             } catch (err) {
-                statusDiv.innerText = "Hata oluştu!";
+                statusDiv.innerText = "İşlem Hatası: Lütfen tekrar çekin.";
             }
         }, 100);
     });
@@ -140,7 +180,7 @@
         const pdfHeight = (canvas.height * pdfWidth) / canvas.width;
         
         pdf.addImage(imgData, 'JPEG', 0, 0, pdfWidth, pdfHeight);
-        pdf.save("tarama.pdf");
+        pdf.save("taranan_belge.pdf");
     });
 
     btnRetake.addEventListener('click', () => {
