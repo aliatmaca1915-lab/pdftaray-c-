@@ -3,238 +3,343 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>PDF Tarayıcı</title>
+    <title>Profesyonel Tarayıcı</title>
     
     <link rel="manifest" href="manifest.json">
     <meta name="apple-mobile-web-app-capable" content="yes">
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-    <meta name="apple-mobile-web-app-title" content="Tarayıcı">
     <link rel="apple-touch-icon" href="https://cdn-icons-png.flaticon.com/512/3143/3143460.png">
 
     <script async src="https://docs.opencv.org/4.8.0/opencv.js" type="text/javascript"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
     <style>
-        body { margin: 0; padding: 0; background-color: #121212; color: white; font-family: sans-serif; overflow: hidden; }
+        body { margin: 0; padding: 0; background-color: #121212; color: white; font-family: sans-serif; overflow: hidden; user-select: none; }
         #app-container { display: flex; flex-direction: column; height: 100vh; }
-        #view-area { flex: 1; position: relative; display: flex; justify-content: center; align-items: center; background: #000; }
+        
+        #view-area { flex: 1; position: relative; display: flex; justify-content: center; align-items: center; background: #000; overflow: hidden; }
         video, canvas { max-width: 100%; max-height: 100%; position: absolute; }
-        canvas { z-index: 10; display: none; }
-        #controls { height: 80px; background: #1e1e1e; display: flex; justify-content: space-around; align-items: center; padding-bottom: 20px; }
-        button { padding: 12px 20px; border: none; border-radius: 8px; font-weight: bold; background: #0a84ff; color: white; font-size: 16px; cursor: pointer; opacity: 0.5; pointer-events: none; }
-        button.active { opacity: 1; pointer-events: auto; }
-        button.danger { background: #ff453a; }
-        button.success { background: #32d74b; }
-        #status { position: absolute; top: 10px; left: 10px; background: rgba(0,0,0,0.6); padding: 5px 10px; border-radius: 5px; z-index: 20; font-size: 12px; }
+        
+        /* Mavi Kılavuz Perde */
+        #guide-frame {
+            position: absolute; width: 70%; height: 70%; border: 3px dashed rgba(10, 132, 255, 0.7);
+            box-shadow: 0 0 0 9999px rgba(0, 0, 0, 0.5); pointer-events: none; z-index: 5;
+        }
+
+        #cropCanvas { z-index: 10; display: none; touch-action: none; }
+        #resultCanvas { z-index: 15; display: none; }
+        
+        #controls { height: 90px; background: #1e1e1e; display: flex; justify-content: space-around; align-items: center; padding-bottom: 20px; z-index: 20; }
+        button { padding: 12px 18px; border: none; border-radius: 8px; font-weight: bold; background: #0a84ff; color: white; font-size: 15px; cursor: pointer; }
+        button:disabled { opacity: 0.5; pointer-events: none; }
+        .success { background: #32d74b; }
+        .danger { background: #ff453a; }
+        
+        #status { position: absolute; top: 15px; left: 15px; background: rgba(0,0,0,0.7); padding: 8px 12px; border-radius: 8px; z-index: 30; font-size: 13px; color: #0a84ff; font-weight: bold; }
     </style>
 </head>
 <body>
 
 <div id="app-container">
     <div id="view-area">
-        <div id="status">Sistem Hazırlanıyor...</div>
+        <div id="status">OpenCV Yükleniyor...</div>
         <video id="camera" autoplay playsinline></video>
-        <canvas id="canvasOutput"></canvas>
+        <div id="guide-frame"></div> <canvas id="cropCanvas"></canvas>
+        <canvas id="resultCanvas"></canvas>
     </div>
     
     <div id="controls">
-        <button id="btn-capture">Fotoğraf Çek</button>
-        <button id="btn-scan" class="success" style="display:none;">4 Köşeyi Bul & Tara</button>
+        <button id="btn-capture" disabled>Fotoğraf Çek</button>
+        <button id="btn-crop" class="success" style="display:none;">Kes ve Düzelt</button>
         <button id="btn-pdf" class="danger" style="display:none;">PDF İndir</button>
-        <button id="btn-retake" style="display:none;">İptal</button>
+        <button id="btn-retake" style="display:none;">İptal / Tekrar</button>
     </div>
 </div>
 
 <script>
     let video = document.getElementById('camera');
-    let canvas = document.getElementById('canvasOutput');
-    let ctx = canvas.getContext('2d');
-    let statusDiv = document.getElementById('status');
+    let cropCanvas = document.getElementById('cropCanvas');
+    let cropCtx = cropCanvas.getContext('2d');
+    let resultCanvas = document.getElementById('resultCanvas');
     
     let btnCapture = document.getElementById('btn-capture');
-    let btnScan = document.getElementById('btn-scan');
+    let btnCrop = document.getElementById('btn-crop');
     let btnPdf = document.getElementById('btn-pdf');
     let btnRetake = document.getElementById('btn-retake');
+    let statusDiv = document.getElementById('status');
+    let guideFrame = document.getElementById('guide-frame');
 
     let isCameraReady = false;
     let isOpenCvReady = false;
+    let srcImage = null; 
 
+    // Manüel Kırpma Noktaları (SolÜst, SağÜst, SağAlt, SolAlt)
+    let points = [];
+    let draggingPoint = null;
+    const POINT_RADIUS = 20;
+
+    // --- 1. KAMERA VE OPENCV BAŞLATMA ---
     async function startCamera() {
         try {
-            const stream = await navigator.mediaDevices.getUserMedia({
-                video: { facingMode: 'environment', width: { ideal: 1920 }, height: { ideal: 1080 } }
-            });
+            const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment', width: { ideal: 1920 }, height: { ideal: 1080 } } });
             video.srcObject = stream;
             isCameraReady = true;
             checkReadyState();
-        } catch (err) {
-            statusDiv.innerText = "Kamera hatası!";
-        }
+        } catch (err) { statusDiv.innerText = "Kamera hatası!"; }
     }
 
     window.Module = {
         onRuntimeInitialized: function() {
             isOpenCvReady = true;
-            statusDiv.innerText = "Sistem Hazır. Kamerayı kağıda tutun.";
             checkReadyState();
         }
     };
 
     function checkReadyState() {
         if (isCameraReady && isOpenCvReady) {
-            btnCapture.classList.add('active');
+            btnCapture.disabled = false;
+            statusDiv.innerText = "Kağıdı mavi çerçeveye oturtun.";
         }
     }
 
+    // --- 2. FOTOĞRAF ÇEK VE KÖŞELERİ BUL (VEYA VARSAYILAN ATA) ---
     btnCapture.addEventListener('click', () => {
-        canvas.width = video.videoWidth;
-        canvas.height = video.videoHeight;
-        ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+        statusDiv.innerText = "Köşeler hesaplanıyor...";
+        cropCanvas.width = video.videoWidth;
+        cropCanvas.height = video.videoHeight;
+        cropCtx.drawImage(video, 0, 0, cropCanvas.width, cropCanvas.height);
         
         video.style.display = 'none';
-        canvas.style.display = 'block';
+        guideFrame.style.display = 'none';
+        cropCanvas.style.display = 'block';
+        
+        // Görüntüyü hafızaya al
+        srcImage = cv.imread(cropCanvas);
+        
+        // OpenCV ile köşeleri bulmayı dene
+        let foundPoints = findDocumentCorners(srcImage);
+        
+        if (foundPoints) {
+            points = foundPoints;
+            statusDiv.innerText = "Köşeler bulundu! Hatalıysa elle düzeltin.";
+        } else {
+            // BULAMAZSA MATEMATİKSEL VARSAYILAN KUTU AT (Kılavuz çerçevenin olduğu yer)
+            statusDiv.innerText = "Köşeleri parmağınızla kağıda oturtun.";
+            let w = cropCanvas.width;
+            let h = cropCanvas.height;
+            let marginX = w * 0.15;
+            let marginY = h * 0.15;
+            points = [
+                {x: marginX, y: marginY},         // Sol Üst
+                {x: w - marginX, y: marginY},     // Sağ Üst
+                {x: w - marginX, y: h - marginY}, // Sağ Alt
+                {x: marginX, y: h - marginY}      // Sol Alt
+            ];
+        }
+
+        drawCropUI();
         
         btnCapture.style.display = 'none';
-        btnScan.style.display = 'block';
+        btnCrop.style.display = 'block';
         btnRetake.style.display = 'block';
-        btnScan.classList.add('active');
-        btnRetake.classList.add('active');
     });
 
-    btnScan.addEventListener('click', () => {
-        statusDiv.innerText = "Perspektif Hesaplanıyor...";
-        setTimeout(() => {
-            try {
-                let src = cv.imread(canvas);
-                let gray = new cv.Mat();
-                cv.cvtColor(src, gray, cv.COLOR_RGBA2GRAY, 0);
-                cv.GaussianBlur(gray, gray, new cv.Size(5, 5), 0, 0, cv.BORDER_DEFAULT);
-                
-                let edges = new cv.Mat();
-                cv.Canny(gray, edges, 75, 200, 3, false);
-                
-                // Kırık çizgileri birleştirmek için kalınlaştırma (Dilation)
-                let M_dilate = cv.Mat.ones(3, 3, cv.CV_8U);
-                cv.dilate(edges, edges, M_dilate, new cv.Point(-1, -1), 1, cv.BORDER_CONSTANT, cv.morphologyDefaultBorderValue());
-
-                let contours = new cv.MatVector();
-                let hierarchy = new cv.Mat();
-                cv.findContours(edges, contours, hierarchy, cv.RETR_EXTERNAL, cv.CHAIN_APPROX_SIMPLE);
-                
-                let maxArea = 0;
-                let docContour = null;
-                
-                for (let i = 0; i < contours.size(); ++i) {
-                    let cnt = contours.get(i);
-                    let area = cv.contourArea(cnt);
-                    
-                    if (area > 50000) { 
-                        let peri = cv.arcLength(cnt, true);
-                        let approx = new cv.Mat();
-                        // Şekli köşegenlere yuvarla
-                        cv.approxPolyDP(cnt, approx, 0.02 * peri, true);
-                        
-                        // SADECE 4 KÖŞELİ ŞEKİLLERİ KABUL ET
-                        if (approx.rows === 4 && area > maxArea) {
-                            maxArea = area;
-                            if (docContour) docContour.delete();
-                            docContour = approx.clone();
-                        }
-                        approx.delete();
-                    }
+    // Otomatik Köşe Bulma Algoritması
+    function findDocumentCorners(src) {
+        let gray = new cv.Mat();
+        cv.cvtColor(src, gray, cv.COLOR_RGBA2GRAY, 0);
+        cv.GaussianBlur(gray, gray, new cv.Size(5, 5), 0, 0, cv.BORDER_DEFAULT);
+        let edges = new cv.Mat();
+        cv.Canny(gray, edges, 75, 200);
+        
+        let contours = new cv.MatVector();
+        let hierarchy = new cv.Mat();
+        cv.findContours(edges, contours, hierarchy, cv.RETR_EXTERNAL, cv.CHAIN_APPROX_SIMPLE);
+        
+        let maxArea = 0;
+        let bestApprox = null;
+        
+        for (let i = 0; i < contours.size(); ++i) {
+            let cnt = contours.get(i);
+            let area = cv.contourArea(cnt);
+            if (area > 50000) {
+                let peri = cv.arcLength(cnt, true);
+                let approx = new cv.Mat();
+                cv.approxPolyDP(cnt, approx, 0.02 * peri, true);
+                if (approx.rows === 4 && area > maxArea) {
+                    maxArea = area;
+                    if (bestApprox) bestApprox.delete();
+                    bestApprox = approx.clone();
                 }
-                
-                let finalImage = new cv.Mat();
-                
-                if (docContour !== null) {
-                    statusDiv.innerText = "4 Köşe Bulundu! Düzeltiliyor...";
-                    
-                    // 4 Köşenin Koordinatlarını Al ve Sırala
-                    let pts = [];
-                    for (let i = 0; i < 4; i++) {
-                        pts.push({x: docContour.data32S[i*2], y: docContour.data32S[i*2+1]});
-                    }
-                    
-                    // Toplama ve çıkarma matematiksel mantığıyla köşeleri belirle
-                    pts.sort((a, b) => (a.x + a.y) - (b.x + b.y));
-                    let tl = pts[0]; // Sol-Üst
-                    let br = pts[3]; // Sağ-Alt
-                    
-                    let rem = [pts[1], pts[2]];
-                    rem.sort((a, b) => (a.y - a.x) - (b.y - b.x));
-                    let tr = rem[0]; // Sağ-Üst
-                    let bl = rem[1]; // Sol-Alt
-                    
-                    // Yeni Kağıdın Gerçek Boyutlarını (Genişlik/Yükseklik) Hesapla
-                    let widthA = Math.hypot(br.x - bl.x, br.y - bl.y);
-                    let widthB = Math.hypot(tr.x - tl.x, tr.y - tl.y);
-                    let maxWidth = Math.max(widthA, widthB);
-                    
-                    let heightA = Math.hypot(tr.x - br.x, tr.y - br.y);
-                    let heightB = Math.hypot(tl.x - bl.x, tl.y - bl.y);
-                    let maxHeight = Math.max(heightA, heightB);
-                    
-                    // Sihirli Matematik: Eski yamuk köşeleri, yeni düz köşelere eşle
-                    let srcTri = cv.matFromArray(4, 1, cv.CV_32FC2, [tl.x, tl.y, tr.x, tr.y, br.x, br.y, bl.x, bl.y]);
-                    let dstTri = cv.matFromArray(4, 1, cv.CV_32FC2, [0, 0, maxWidth, 0, maxWidth, maxHeight, 0, maxHeight]);
-                    
-                    let M = cv.getPerspectiveTransform(srcTri, dstTri);
-                    let warped = new cv.Mat();
-                    let dsize = new cv.Size(maxWidth, maxHeight);
-                    
-                    // Görüntüyü Sündür (Perspektifi Düzelt)
-                    cv.warpPerspective(src, warped, M, dsize, cv.INTER_LINEAR, cv.BORDER_CONSTANT, new cv.Scalar());
-                    
-                    // Temiz Siyah/Beyaz Filtreyi Uygula
-                    cv.cvtColor(warped, finalImage, cv.COLOR_RGBA2GRAY, 0);
-                    cv.GaussianBlur(finalImage, finalImage, new cv.Size(5, 5), 0, 0, cv.BORDER_DEFAULT);
-                    cv.adaptiveThreshold(finalImage, finalImage, 255, cv.ADAPTIVE_THRESH_GAUSSIAN_C, cv.THRESH_BINARY, 25, 15);
-                    
-                    canvas.width = maxWidth;
-                    canvas.height = maxHeight;
-                    
-                    // Hafıza temizliği
-                    srcTri.delete(); dstTri.delete(); M.delete(); warped.delete(); docContour.delete();
-                } else {
-                    statusDiv.innerText = "4 net köşe bulunamadı, varsayılan tarama.";
-                    cv.cvtColor(src, finalImage, cv.COLOR_RGBA2GRAY, 0);
-                    cv.GaussianBlur(finalImage, finalImage, new cv.Size(5, 5), 0, 0, cv.BORDER_DEFAULT);
-                    cv.adaptiveThreshold(finalImage, finalImage, 255, cv.ADAPTIVE_THRESH_GAUSSIAN_C, cv.THRESH_BINARY, 25, 15);
-                }
-                
-                cv.imshow('canvasOutput', finalImage);
-                
-                // Genel hafıza temizliği
-                src.delete(); gray.delete(); edges.delete(); M_dilate.delete(); contours.delete(); hierarchy.delete(); finalImage.delete();
-                
-                statusDiv.innerText = "Tarama Başarılı!";
-                btnScan.style.display = 'none';
-                btnPdf.style.display = 'block';
-                btnPdf.classList.add('active');
-            } catch (err) {
-                statusDiv.innerText = "İşlem Hatası: " + err;
+                approx.delete();
             }
-        }, 100);
+        }
+        
+        gray.delete(); edges.delete(); contours.delete(); hierarchy.delete();
+        
+        if (bestApprox) {
+            let pts = [];
+            for (let i = 0; i < 4; i++) {
+                pts.push({x: bestApprox.data32S[i*2], y: bestApprox.data32S[i*2+1]});
+            }
+            bestApprox.delete();
+            
+            // Köşeleri sırala (TL, TR, BR, BL)
+            pts.sort((a, b) => (a.x + a.y) - (b.x + b.y));
+            let tl = pts[0], br = pts[3];
+            let rem = [pts[1], pts[2]].sort((a, b) => (a.y - a.x) - (b.y - b.x));
+            return [tl, rem[0], br, rem[1]];
+        }
+        return null;
+    }
+
+    // --- 3. DOKUNMATİK MANÜEL KIRPMA ARAYÜZÜ ---
+    function drawCropUI() {
+        cropCtx.clearRect(0, 0, cropCanvas.width, cropCanvas.height);
+        cropCtx.drawImage(video, 0, 0, cropCanvas.width, cropCanvas.height);
+        
+        // Karartılmış arkaplan ve şeffaf iç kısım
+        cropCtx.fillStyle = 'rgba(0, 0, 0, 0.6)';
+        cropCtx.beginPath();
+        cropCtx.rect(0, 0, cropCanvas.width, cropCanvas.height);
+        cropCtx.moveTo(points[0].x, points[0].y);
+        cropCtx.lineTo(points[1].x, points[1].y);
+        cropCtx.lineTo(points[2].x, points[2].y);
+        cropCtx.lineTo(points[3].x, points[3].y);
+        cropCtx.closePath();
+        cropCtx.fill('evenodd');
+
+        // Çizgiler
+        cropCtx.strokeStyle = '#0a84ff';
+        cropCtx.lineWidth = 3;
+        cropCtx.beginPath();
+        cropCtx.moveTo(points[0].x, points[0].y);
+        for(let i=1; i<4; i++) cropCtx.lineTo(points[i].x, points[i].y);
+        cropCtx.closePath();
+        cropCtx.stroke();
+
+        // Dokunmatik Noktalar (Daireler)
+        cropCtx.fillStyle = '#0a84ff';
+        points.forEach(p => {
+            cropCtx.beginPath();
+            cropCtx.arc(p.x, p.y, POINT_RADIUS * 1.5, 0, 2 * Math.PI);
+            cropCtx.fill();
+            // Ortasına beyaz nokta
+            cropCtx.beginPath();
+            cropCtx.arc(p.x, p.y, 5, 0, 2 * Math.PI);
+            cropCtx.fillStyle = 'white';
+            cropCtx.fill();
+            cropCtx.fillStyle = '#0a84ff';
+        });
+    }
+
+    // Ekrana dokunma matematiği (Fare ve Parmak uyumlu)
+    function getMousePos(e) {
+        let rect = cropCanvas.getBoundingClientRect();
+        let clientX = e.touches ? e.touches[0].clientX : e.clientX;
+        let clientY = e.touches ? e.touches[0].clientY : e.clientY;
+        let scaleX = cropCanvas.width / rect.width;
+        let scaleY = cropCanvas.height / rect.height;
+        return { x: (clientX - rect.left) * scaleX, y: (clientY - rect.top) * scaleY };
+    }
+
+    function handleStart(e) {
+        e.preventDefault();
+        let pos = getMousePos(e);
+        // Tıklanan yere en yakın köşeyi bul (Büyük dokunma alanı)
+        let hitRadius = POINT_RADIUS * 4; 
+        for (let i = 0; i < points.length; i++) {
+            let dx = pos.x - points[i].x;
+            let dy = pos.y - points[i].y;
+            if (dx * dx + dy * dy < hitRadius * hitRadius) {
+                draggingPoint = points[i];
+                break;
+            }
+        }
+    }
+
+    function handleMove(e) {
+        if (!draggingPoint) return;
+        e.preventDefault();
+        let pos = getMousePos(e);
+        draggingPoint.x = Math.max(0, Math.min(pos.x, cropCanvas.width));
+        draggingPoint.y = Math.max(0, Math.min(pos.y, cropCanvas.height));
+        drawCropUI();
+    }
+
+    function handleEnd(e) { draggingPoint = null; }
+
+    cropCanvas.addEventListener('mousedown', handleStart);
+    cropCanvas.addEventListener('mousemove', handleMove);
+    cropCanvas.addEventListener('mouseup', handleEnd);
+    cropCanvas.addEventListener('touchstart', handleStart, {passive: false});
+    cropCanvas.addEventListener('touchmove', handleMove, {passive: false});
+    cropCanvas.addEventListener('touchend', handleEnd);
+
+    // --- 4. A4 FORMATINA SÜNDÜR VE SİYAH-BEYAZ YAP ---
+    btnCrop.addEventListener('click', () => {
+        statusDiv.innerText = "İşleniyor...";
+        setTimeout(() => {
+            // A4 Matematiksel Oranı (1 : 1.414)
+            let widthA = Math.hypot(points[2].x - points[3].x, points[2].y - points[3].y);
+            let widthB = Math.hypot(points[1].x - points[0].x, points[1].y - points[0].y);
+            let finalWidth = Math.max(widthA, widthB);
+            let finalHeight = finalWidth * 1.414; // A4 standardına zorla!
+
+            let srcTri = cv.matFromArray(4, 1, cv.CV_32FC2, [points[0].x, points[0].y, points[1].x, points[1].y, points[2].x, points[2].y, points[3].x, points[3].y]);
+            let dstTri = cv.matFromArray(4, 1, cv.CV_32FC2, [0, 0, finalWidth, 0, finalWidth, finalHeight, 0, finalHeight]);
+            
+            let M = cv.getPerspectiveTransform(srcTri, dstTri);
+            let warped = new cv.Mat();
+            let dsize = new cv.Size(finalWidth, finalHeight);
+            
+            // Perspektifi düzelt
+            cv.warpPerspective(srcImage, warped, M, dsize, cv.INTER_LINEAR, cv.BORDER_CONSTANT, new cv.Scalar());
+            
+            // Temiz Siyah/Beyaz Filtresi
+            let finalImage = new cv.Mat();
+            cv.cvtColor(warped, finalImage, cv.COLOR_RGBA2GRAY, 0);
+            cv.GaussianBlur(finalImage, finalImage, new cv.Size(5, 5), 0, 0, cv.BORDER_DEFAULT);
+            cv.adaptiveThreshold(finalImage, finalImage, 255, cv.ADAPTIVE_THRESH_GAUSSIAN_C, cv.THRESH_BINARY, 21, 10);
+            
+            resultCanvas.width = finalWidth;
+            resultCanvas.height = finalHeight;
+            cv.imshow('resultCanvas', finalImage);
+            
+            cropCanvas.style.display = 'none';
+            resultCanvas.style.display = 'block';
+            
+            // Hafıza temizliği
+            srcTri.delete(); dstTri.delete(); M.delete(); warped.delete(); finalImage.delete(); srcImage.delete();
+            
+            statusDiv.innerText = "Belge A4 formatında hazır!";
+            btnCrop.style.display = 'none';
+            btnPdf.style.display = 'block';
+        }, 50);
     });
 
+    // --- 5. PDF İNDİR VE İPTAL ---
     btnPdf.addEventListener('click', () => {
         const { jsPDF } = window.jspdf;
         const pdf = new jsPDF({ orientation: "portrait", unit: "mm", format: "a4" });
-        const imgData = canvas.toDataURL("image/jpeg", 0.8);
+        const imgData = resultCanvas.toDataURL("image/jpeg", 0.8);
         const pdfWidth = pdf.internal.pageSize.getWidth();
-        const pdfHeight = (canvas.height * pdfWidth) / canvas.width;
-        
+        const pdfHeight = (resultCanvas.height * pdfWidth) / resultCanvas.width;
         pdf.addImage(imgData, 'JPEG', 0, 0, pdfWidth, pdfHeight);
         pdf.save("taranan_belge.pdf");
     });
 
     btnRetake.addEventListener('click', () => {
+        if(srcImage && !srcImage.isDeleted()) srcImage.delete();
+        resultCanvas.style.display = 'none';
+        cropCanvas.style.display = 'none';
         video.style.display = 'block';
-        canvas.style.display = 'none';
+        guideFrame.style.display = 'block';
+        
         btnCapture.style.display = 'block';
-        btnScan.style.display = 'none';
+        btnCrop.style.display = 'none';
         btnPdf.style.display = 'none';
         btnRetake.style.display = 'none';
-        statusDiv.innerText = "Hazır.";
+        statusDiv.innerText = "Kağıdı mavi çerçeveye oturtun.";
     });
 
     startCamera();
